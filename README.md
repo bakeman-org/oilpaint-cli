@@ -68,3 +68,6 @@ oilpaint -f webp -s 1.2 -o out.webp portrait.png
 - 只想轻微柔化：`-r 2` 或 `-r 3`。
 - 纹理太脏：调低 `--texture`，例如 `0.15`；想要明显的画布感可到 `0.6`。
 - 颜色更鲜艳：`-s 1.2` 到 `1.4`。
+
+# ref links
+- https://github.com/cyanharlow/purecss-francine
