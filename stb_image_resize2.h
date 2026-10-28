@@ -665,10 +665,10 @@ STBIRDEF int stbir_set_edgemodes(STBIR_RESIZE *resize,
                                  stbir_edge horizontal_edge,
                                  stbir_edge vertical_edge); // CLAMP by default
 
-STBIRDEF int stbir_set_filters(STBIR_RESIZE *resize,
-                               stbir_filter horizontal_filter,
-                               stbir_filter vertical_filter); // STBIR_DEFAULT_FILTER_UPSAMPLE/DOWNSAMPLE
-                                                              // by default
+STBIRDEF int stbir_set_filters(
+    STBIR_RESIZE *resize, stbir_filter horizontal_filter,
+    stbir_filter vertical_filter); // STBIR_DEFAULT_FILTER_UPSAMPLE/DOWNSAMPLE
+                                   // by default
 STBIRDEF int
 stbir_set_filter_callbacks(STBIR_RESIZE *resize,
                            stbir__kernel_callback *horizontal_filter,
@@ -8824,10 +8824,10 @@ STBIRDEF int stbir_set_edgemodes(STBIR_RESIZE *resize,
   return 1;
 }
 
-STBIRDEF int stbir_set_filters(STBIR_RESIZE *resize,
-                               stbir_filter horizontal_filter,
-                               stbir_filter vertical_filter) // STBIR_DEFAULT_FILTER_UPSAMPLE/DOWNSAMPLE
-                                                             // by default
+STBIRDEF int stbir_set_filters(
+    STBIR_RESIZE *resize, stbir_filter horizontal_filter,
+    stbir_filter vertical_filter) // STBIR_DEFAULT_FILTER_UPSAMPLE/DOWNSAMPLE
+                                  // by default
 {
   resize->horizontal_filter = horizontal_filter;
   resize->vertical_filter = vertical_filter;

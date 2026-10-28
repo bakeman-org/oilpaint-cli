@@ -1,11 +1,11 @@
 /* oilpaint.c — single-file oil-paint CLI
- *
- * 构建：
- *   stb 后端（零依赖）:
- *     cc -O2 -o oilpaint oilpaint.c -lm
- *   libvips 后端:
- *     cc -O2 -DHAVE_VIPS -o oilpaint oilpaint.c $(pkg-config --cflags --libs vips) -lm
- *
+
+ 构建：
+   stb 后端（零依赖）:
+     cc -O2 -o oilpaint oilpaint.c -lm
+   libvips 后端:
+     cc -O2 -DHAVE_VIPS -o oilpaint oilpaint.c $(pkg-config --cflags --libs vips) -lm
+
  */
 
 #include <errno.h>
@@ -118,8 +118,12 @@ static uint8_t *kuwahara(const uint8_t *src, int width, int height,
     for (int x = 0; x < width; x++) {
       const uint8_t *p = srcRow + (size_t)x * 3;
       double r = p[0], g = p[1], b = p[2];
-      rowR += r; rowG += g; rowB += b;
-      rowSqR += r * r; rowSqG += g * g; rowSqB += b * b;
+      rowR += r;
+      rowG += g;
+      rowB += b;
+      rowSqR += r * r;
+      rowSqG += g * g;
+      rowSqB += b * b;
 
       int i = cur + x + 1;
       int up = prev + x + 1;
@@ -152,10 +156,22 @@ static uint8_t *kuwahara(const uint8_t *src, int width, int height,
       int right0 = x;
       int right1 = x + radius + 1 > width ? width : x + radius + 1;
 
-      qx0[0] = left0;   qx1[0] = left1;  qy0[0] = top0;    qy1[0] = top1;
-      qx0[1] = right0;  qx1[1] = right1; qy0[1] = top0;    qy1[1] = top1;
-      qx0[2] = left0;   qx1[2] = left1;  qy0[2] = bottom0; qy1[2] = bottom1;
-      qx0[3] = right0;  qx1[3] = right1; qy0[3] = bottom0; qy1[3] = bottom1;
+      qx0[0] = left0;
+      qx1[0] = left1;
+      qy0[0] = top0;
+      qy1[0] = top1;
+      qx0[1] = right0;
+      qx1[1] = right1;
+      qy0[1] = top0;
+      qy1[1] = top1;
+      qx0[2] = left0;
+      qx1[2] = left1;
+      qy0[2] = bottom0;
+      qy1[2] = bottom1;
+      qx0[3] = right0;
+      qx1[3] = right1;
+      qy0[3] = bottom0;
+      qy1[3] = bottom1;
 
       double bestVar = INFINITY, bestR = 0, bestG = 0, bestB = 0;
 
@@ -172,26 +188,35 @@ static uint8_t *kuwahara(const uint8_t *src, int width, int height,
         double meanG = (sumG[d] - sumG[b] - sumG[c] + sumG[a]) / count;
         double meanB = (sumB[d] - sumB[b] - sumB[c] + sumB[a]) / count;
 
-        double varR = fmax(0, (sqR[d] - sqR[b] - sqR[c] + sqR[a]) / count - meanR * meanR);
-        double varG = fmax(0, (sqG[d] - sqG[b] - sqG[c] + sqG[a]) / count - meanG * meanG);
-        double varB = fmax(0, (sqB[d] - sqB[b] - sqB[c] + sqB[a]) / count - meanB * meanB);
+        double varR = fmax(0, (sqR[d] - sqR[b] - sqR[c] + sqR[a]) / count -
+                                  meanR * meanR);
+        double varG = fmax(0, (sqG[d] - sqG[b] - sqG[c] + sqG[a]) / count -
+                                  meanG * meanG);
+        double varB = fmax(0, (sqB[d] - sqB[b] - sqB[c] + sqB[a]) / count -
+                                  meanB * meanB);
 
         double variance = varR + varG + varB;
         if (variance < bestVar) {
           bestVar = variance;
-          bestR = meanR; bestG = meanG; bestB = meanB;
+          bestR = meanR;
+          bestG = meanG;
+          bestB = meanB;
         }
       }
 
       size_t o = ((size_t)y * width + x) * 3;
-      out[o]     = (uint8_t)(bestR + 0.5);
+      out[o] = (uint8_t)(bestR + 0.5);
       out[o + 1] = (uint8_t)(bestG + 0.5);
       out[o + 2] = (uint8_t)(bestB + 0.5);
     }
   }
 
-  free(sumR); free(sumG); free(sumB);
-  free(sqR);  free(sqG);  free(sqB);
+  free(sumR);
+  free(sumG);
+  free(sumB);
+  free(sqR);
+  free(sqG);
+  free(sqB);
   return out;
 }
 
@@ -227,7 +252,8 @@ static Image load_image_vips(const char *path, int max_edge) {
 
   if (!(in = vips_image_new_from_file(path, "fail-on", VIPS_FAIL_ON_NONE,
                                       NULL))) {
-    fprintf(stderr, "oilpaint: cannot open %s: %s\n", path, vips_error_buffer());
+    fprintf(stderr, "oilpaint: cannot open %s: %s\n", path,
+            vips_error_buffer());
     return img;
   }
 
@@ -240,8 +266,8 @@ static Image load_image_vips(const char *path, int max_edge) {
     VipsImage *flat = NULL;
     double bg[3] = {255.0, 255.0, 255.0};
     VipsArrayDouble *background = vips_array_double_new(bg, 3);
-    int r = vips_flatten(rotated, &flat, "background", background,
-                         "max_alpha", 255.0, NULL);
+    int r = vips_flatten(rotated, &flat, "background", background, "max_alpha",
+                         255.0, NULL);
     vips_area_unref(VIPS_AREA(background));
     if (r)
       goto fail;
@@ -261,7 +287,8 @@ static Image load_image_vips(const char *path, int max_edge) {
     scale = (double)max_edge / (w > h ? w : h);
 
   if (scale < 1.0) {
-    if (vips_resize(srgb, &resized, scale, "kernel", VIPS_KERNEL_LANCZOS3, NULL))
+    if (vips_resize(srgb, &resized, scale, "kernel", VIPS_KERNEL_LANCZOS3,
+                    NULL))
       goto fail;
     g_object_unref(srgb);
     srgb = NULL;
@@ -296,21 +323,26 @@ static Image load_image_vips(const char *path, int max_edge) {
 
 fail:
   fprintf(stderr, "oilpaint: libvips error: %s\n", vips_error_buffer());
-  if (in)      g_object_unref(in);
-  if (rotated) g_object_unref(rotated);
-  if (srgb)    g_object_unref(srgb);
-  if (resized) g_object_unref(resized);
-  if (rgb)     g_object_unref(rgb);
-  if (mem)     g_object_unref(mem);
+  if (in)
+    g_object_unref(in);
+  if (rotated)
+    g_object_unref(rotated);
+  if (srgb)
+    g_object_unref(srgb);
+  if (resized)
+    g_object_unref(resized);
+  if (rgb)
+    g_object_unref(rgb);
+  if (mem)
+    g_object_unref(mem);
   return img;
 }
 
 static int save_image_vips(const Image *img, const char *path,
                            const char *format, int quality) {
   size_t sz = (size_t)img->width * img->height * 3;
-  VipsImage *out = vips_image_new_from_memory(img->rgb, sz, img->width,
-                                               img->height, 3,
-                                               VIPS_FORMAT_UCHAR);
+  VipsImage *out = vips_image_new_from_memory(
+      img->rgb, sz, img->width, img->height, 3, VIPS_FORMAT_UCHAR);
   if (!out) {
     fprintf(stderr, "oilpaint: cannot wrap memory into vips image\n");
     return -1;
@@ -340,7 +372,8 @@ static Image load_image_stb(const char *path, int max_edge) {
   int w, h, ch;
   stbi_uc *data = stbi_load(path, &w, &h, &ch, 3);
   if (!data) {
-    fprintf(stderr, "oilpaint: cannot open %s: %s\n", path, stbi_failure_reason());
+    fprintf(stderr, "oilpaint: cannot open %s: %s\n", path,
+            stbi_failure_reason());
     return img;
   }
 
@@ -348,8 +381,10 @@ static Image load_image_stb(const char *path, int max_edge) {
     float scale = (float)max_edge / (w > h ? w : h);
     int nw = (int)(w * scale + 0.5f);
     int nh = (int)(h * scale + 0.5f);
-    if (nw < 1) nw = 1;
-    if (nh < 1) nh = 1;
+    if (nw < 1)
+      nw = 1;
+    if (nh < 1)
+      nh = 1;
 
     stbi_uc *resized = malloc((size_t)nw * nh * 3);
     if (!resized) {
@@ -375,7 +410,9 @@ static int save_image_stb(const Image *img, const char *path,
     return stbi_write_jpg(path, img->width, img->height, 3, img->rgb, quality);
 
   if (strcmp(format, "webp") == 0)
-    fprintf(stderr, "oilpaint: WebP not supported in stb backend, writing PNG instead\n");
+    fprintf(
+        stderr,
+        "oilpaint: WebP not supported in stb backend, writing PNG instead\n");
 
   return stbi_write_png(path, img->width, img->height, 3, img->rgb,
                         img->width * 3);
@@ -436,7 +473,8 @@ static void usage(const char *prog) {
       "oilpaint - turn photos into oil paintings\n\n"
       "Usage:\n  %s [options] <image...>\n\n"
       "Options:\n"
-      "  -o, --out <path>        Output file or directory (default: ./oilpaint-output)\n"
+      "  -o, --out <path>        Output file or directory (default: "
+      "./oilpaint-output)\n"
       "  -r, --radius <n>        Brush size, 1-24 (default: 4)\n"
       "  -m, --max <px>          Max long edge, 64+ (default: 1600)\n"
       "      --texture <0-1>     Canvas texture strength (default: 0.35)\n"
@@ -458,29 +496,47 @@ int main(int argc, char **argv) {
   float texture = 0.35f, saturation = 1.0f;
   const char *format_opt = NULL;
 
-  static struct option long_opts[] = {
-      {"out",        required_argument, 0, 'o'},
-      {"radius",     required_argument, 0, 'r'},
-      {"max",        required_argument, 0, 'm'},
-      {"texture",    required_argument, 0, 1000},
-      {"saturation", required_argument, 0, 's'},
-      {"format",     required_argument, 0, 'f'},
-      {"quality",    required_argument, 0, 'q'},
-      {"help",       no_argument,       0, 'h'},
-      {0, 0, 0, 0}};
+  static struct option long_opts[] = {{"out", required_argument, 0, 'o'},
+                                      {"radius", required_argument, 0, 'r'},
+                                      {"max", required_argument, 0, 'm'},
+                                      {"texture", required_argument, 0, 1000},
+                                      {"saturation", required_argument, 0, 's'},
+                                      {"format", required_argument, 0, 'f'},
+                                      {"quality", required_argument, 0, 'q'},
+                                      {"help", no_argument, 0, 'h'},
+                                      {0, 0, 0, 0}};
 
   int c;
-  while ((c = getopt_long(argc, argv, "o:r:m:s:f:q:h", long_opts, NULL)) != -1) {
+  while ((c = getopt_long(argc, argv, "o:r:m:s:f:q:h", long_opts, NULL)) !=
+         -1) {
     switch (c) {
-    case 'o': out_path = optarg; break;
-    case 'r': radius = atoi(optarg); break;
-    case 'm': max_edge = atoi(optarg); break;
-    case 1000: texture = atof(optarg); break;
-    case 's': saturation = atof(optarg); break;
-    case 'f': format_opt = optarg; break;
-    case 'q': quality = atoi(optarg); break;
-    case 'h': usage(argv[0]); return 0;
-    default: usage(argv[0]); return 2;
+    case 'o':
+      out_path = optarg;
+      break;
+    case 'r':
+      radius = atoi(optarg);
+      break;
+    case 'm':
+      max_edge = atoi(optarg);
+      break;
+    case 1000:
+      texture = atof(optarg);
+      break;
+    case 's':
+      saturation = atof(optarg);
+      break;
+    case 'f':
+      format_opt = optarg;
+      break;
+    case 'q':
+      quality = atoi(optarg);
+      break;
+    case 'h':
+      usage(argv[0]);
+      return 0;
+    default:
+      usage(argv[0]);
+      return 2;
     }
   }
 
@@ -551,9 +607,11 @@ int main(int argc, char **argv) {
       char stem[512];
       snprintf(stem, sizeof(stem), "%s", base);
       char *dot = strrchr(stem, '.');
-      if (dot) *dot = '\0';
+      if (dot)
+        *dot = '\0';
       const char *ext = strcmp(format, "jpeg") == 0 ? "jpg" : format;
-      snprintf(out_file, sizeof(out_file), "%s/%s-oilpaint.%s", out_dir, stem, ext);
+      snprintf(out_file, sizeof(out_file), "%s/%s-oilpaint.%s", out_dir, stem,
+               ext);
     }
 
     printf("  -> %s\n", out_file);
@@ -567,10 +625,10 @@ int main(int argc, char **argv) {
     }
 
     int save_code = save_image(&img, out_file, format, quality);
-    if (save_code != 1) {// NOTICE: I don't know why 1
-        fprintf(stderr, "oilpaint: failed to save %s, save return code: %d\n",
-                out_file, save_code);
-        failures++;
+    if (save_code != 1) { // NOTICE: I don't know why 1
+      fprintf(stderr, "oilpaint: failed to save %s, save return code: %d\n",
+              out_file, save_code);
+      failures++;
     }
 
     free(img.rgb);
