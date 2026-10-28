@@ -3,3 +3,5 @@ oilpaint-output/
 testdata/
 a.out
 oilpaint
+oilpaint_stb
+oilpaint_vips

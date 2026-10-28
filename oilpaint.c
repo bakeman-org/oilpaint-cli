@@ -2,9 +2,9 @@
 
  构建：
    stb 后端（零依赖）:
-     cc -O2 -o oilpaint oilpaint.c -lm
+     cc -O2 -o oilpaint_stb oilpaint.c -lm
    libvips 后端:
-     cc -O2 -DHAVE_VIPS -o oilpaint oilpaint.c $(pkg-config --cflags --libs vips) -lm
+     cc -O2 -DHAVE_VIPS -o oilpaint_vips oilpaint.c $(pkg-config --cflags --libs vips) -lm
 
  */
 
@@ -30,11 +30,12 @@
 #endif
 
 /* ============================================================
- * 滤镜
+ * 滤镜部分（与原 JS 实现一一对应）
  * ============================================================ */
 
 #define REFERENCE_EDGE 400
 
+/* 饱和度调整：向亮度灰度值做线性插值 */
 static void apply_saturation(uint8_t *pixels, size_t npix, float saturation) {
   if (!isfinite(saturation) || saturation == 1.0f)
     return;
@@ -48,6 +49,7 @@ static void apply_saturation(uint8_t *pixels, size_t npix, float saturation) {
   }
 }
 
+/* 32 位整数哈希，输出 [0,1) 浮点。等价于 JS 里的 Math.imul 版本 */
 static inline float hash2(int x, int y) {
   uint32_t h = (uint32_t)x * 374761393u + (uint32_t)y * 668265263u;
   h = (h ^ (h >> 13)) * 1274126177u;
@@ -55,6 +57,7 @@ static inline float hash2(int x, int y) {
   return h / 4294967296.0f;
 }
 
+/* 双线性插值的值噪声（smoothstep 过渡） */
 static float smooth_noise(int x, int y, float scale) {
   float fx = x / scale, fy = y / scale;
   int ix = (int)floorf(fx), iy = (int)floorf(fy);
@@ -68,16 +71,19 @@ static float smooth_noise(int x, int y, float scale) {
   return top + (bottom - top) * sy;
 }
 
+/* 在像素上叠加画布编织纹 + 细颗粒 + 大尺度颜料不均 */
 static void apply_canvas_texture(uint8_t *pixels, int width, int height,
                                  float strength) {
   int long_edge = width > height ? width : height;
   float amplitude = strength * 30.0f;
+  /* 编织和大块斑驳的周期随图像尺寸缩放，避免高分辨率时被平均掉 */
   float weave_period = fmaxf(6.0f, long_edge / 90.0f);
   float weave_freq = (float)(M_PI * 2.0 / weave_period);
   float broad_scale = fmaxf(8.0f, long_edge / 45.0f);
 
   for (int y = 0; y < height; y++) {
     for (int x = 0; x < width; x++) {
+      /* 斜向亚麻编织 */
       float weave = sinf(x * weave_freq + y * weave_freq * 0.15f) *
                     sinf(y * weave_freq - x * weave_freq * 0.15f);
       float grain = hash2(x, y) - 0.5f;
@@ -92,11 +98,16 @@ static void apply_canvas_texture(uint8_t *pixels, int width, int height,
   }
 }
 
+/* Kuwahara 滤镜：用积分图（summed-area table）加速四象限均值和方差计算。
+ * 每个像素在 4 个重叠象限里挑“方差最小”的那个，取其均值作为输出，
+ * 这就是油画笔触的核心来源：平坦区域被抹平为色块，边缘处因方差大被保留。 */
 static uint8_t *kuwahara(const uint8_t *src, int width, int height,
                          int radius) {
   int stride = width + 1;
   size_t plane = (size_t)stride * (height + 1);
 
+  /* 6 张积分表：R/G/B 的求和 与 平方和。
+   * 用 double 防止 1600x1600 图像下平方和溢出（255^2 * 2.5M ≈ 1.6e11 > 2^32）。 */
   double *sumR = calloc(plane, sizeof(double));
   double *sumG = calloc(plane, sizeof(double));
   double *sumB = calloc(plane, sizeof(double));
@@ -108,6 +119,7 @@ static uint8_t *kuwahara(const uint8_t *src, int width, int height,
     exit(1);
   }
 
+  /* 第一遍：逐行累加构造积分图 */
   for (int y = 0; y < height; y++) {
     double rowR = 0, rowG = 0, rowB = 0;
     double rowSqR = 0, rowSqG = 0, rowSqB = 0;
@@ -142,8 +154,10 @@ static uint8_t *kuwahara(const uint8_t *src, int width, int height,
     exit(1);
   }
 
+  /* 四象限坐标缓存，避免每像素分配数组 */
   int qx0[4], qx1[4], qy0[4], qy1[4];
 
+  /* 第二遍：逐像素挑方差最小的象限 */
   for (int y = 0; y < height; y++) {
     int top0 = y - radius < 0 ? 0 : y - radius;
     int top1 = y + 1;
@@ -156,22 +170,11 @@ static uint8_t *kuwahara(const uint8_t *src, int width, int height,
       int right0 = x;
       int right1 = x + radius + 1 > width ? width : x + radius + 1;
 
-      qx0[0] = left0;
-      qx1[0] = left1;
-      qy0[0] = top0;
-      qy1[0] = top1;
-      qx0[1] = right0;
-      qx1[1] = right1;
-      qy0[1] = top0;
-      qy1[1] = top1;
-      qx0[2] = left0;
-      qx1[2] = left1;
-      qy0[2] = bottom0;
-      qy1[2] = bottom1;
-      qx0[3] = right0;
-      qx1[3] = right1;
-      qy0[3] = bottom0;
-      qy1[3] = bottom1;
+      /* 左上、右上、左下、右下 */
+      qx0[0] = left0;   qx1[0] = left1;  qy0[0] = top0;    qy1[0] = top1;
+      qx0[1] = right0;  qx1[1] = right1; qy0[1] = top0;    qy1[1] = top1;
+      qx0[2] = left0;   qx1[2] = left1;  qy0[2] = bottom0; qy1[2] = bottom1;
+      qx0[3] = right0;  qx1[3] = right1; qy0[3] = bottom0; qy1[3] = bottom1;
 
       double bestVar = INFINITY, bestR = 0, bestG = 0, bestB = 0;
 
@@ -181,6 +184,7 @@ static uint8_t *kuwahara(const uint8_t *src, int width, int height,
         if (count == 0)
           continue;
 
+        /* 积分图上的四点查表，O(1) 得到矩形区域的求和 */
         int a = y0 * stride + x0, b = y0 * stride + x1;
         int c = y1 * stride + x0, d = y1 * stride + x1;
 
@@ -188,12 +192,10 @@ static uint8_t *kuwahara(const uint8_t *src, int width, int height,
         double meanG = (sumG[d] - sumG[b] - sumG[c] + sumG[a]) / count;
         double meanB = (sumB[d] - sumB[b] - sumB[c] + sumB[a]) / count;
 
-        double varR = fmax(0, (sqR[d] - sqR[b] - sqR[c] + sqR[a]) / count -
-                                  meanR * meanR);
-        double varG = fmax(0, (sqG[d] - sqG[b] - sqG[c] + sqG[a]) / count -
-                                  meanG * meanG);
-        double varB = fmax(0, (sqB[d] - sqB[b] - sqB[c] + sqB[a]) / count -
-                                  meanB * meanB);
+        /* Var = E[X^2] - E[X]^2，clamp 到 0 防止浮点误差产生负方差 */
+        double varR = fmax(0, (sqR[d] - sqR[b] - sqR[c] + sqR[a]) / count - meanR * meanR);
+        double varG = fmax(0, (sqG[d] - sqG[b] - sqG[c] + sqG[a]) / count - meanG * meanG);
+        double varB = fmax(0, (sqB[d] - sqB[b] - sqB[c] + sqB[a]) / count - meanB * meanB);
 
         double variance = varR + varG + varB;
         if (variance < bestVar) {
@@ -205,24 +207,22 @@ static uint8_t *kuwahara(const uint8_t *src, int width, int height,
       }
 
       size_t o = ((size_t)y * width + x) * 3;
-      out[o] = (uint8_t)(bestR + 0.5);
+      out[o]     = (uint8_t)(bestR + 0.5);
       out[o + 1] = (uint8_t)(bestG + 0.5);
       out[o + 2] = (uint8_t)(bestB + 0.5);
     }
   }
 
-  free(sumR);
-  free(sumG);
-  free(sumB);
-  free(sqR);
-  free(sqG);
-  free(sqB);
+  free(sumR); free(sumG); free(sumB);
+  free(sqR);  free(sqG);  free(sqB);
   return out;
 }
 
+/* 完整滤镜管线：Kuwahara → 饱和度 → 画布纹理 */
 static uint8_t *oil_paint_pixels(const uint8_t *rgb, int width, int height,
                                  int radius, float texture, float saturation) {
   int long_edge = width > height ? width : height;
+  /* 笔刷半径按 REFERENCE_EDGE 缩放，保证不同分辨率下视觉一致 */
   int brush = (int)roundf((float)radius * long_edge / REFERENCE_EDGE);
   if (brush < 1)
     brush = 1;
@@ -240,11 +240,12 @@ static uint8_t *oil_paint_pixels(const uint8_t *rgb, int width, int height,
 
 typedef struct {
   int width, height;
-  uint8_t *rgb;
+  uint8_t *rgb;  /* packed RGB, 3 字节/像素 */
 } Image;
 
 #ifdef HAVE_VIPS
 
+/* 使用 libvips 加载：autorot（EXIF）→ flatten（透明压白）→ sRGB → lanczos3 缩放 → 取 3 通道 */
 static Image load_image_vips(const char *path, int max_edge) {
   Image img = {0, 0, NULL};
   VipsImage *in = NULL, *rotated = NULL, *srgb = NULL, *resized = NULL,
@@ -252,22 +253,23 @@ static Image load_image_vips(const char *path, int max_edge) {
 
   if (!(in = vips_image_new_from_file(path, "fail-on", VIPS_FAIL_ON_NONE,
                                       NULL))) {
-    fprintf(stderr, "oilpaint: cannot open %s: %s\n", path,
-            vips_error_buffer());
+    fprintf(stderr, "oilpaint: cannot open %s: %s\n", path, vips_error_buffer());
     return img;
   }
 
+  /* 处理 EXIF 方向 */
   if (vips_autorot(in, &rotated, NULL))
     goto fail;
   g_object_unref(in);
   in = NULL;
 
+  /* 有 alpha 通道就压到白底，等价于 sharp().flatten({background:'#ffffff'}) */
   if (vips_image_hasalpha(rotated)) {
     VipsImage *flat = NULL;
     double bg[3] = {255.0, 255.0, 255.0};
     VipsArrayDouble *background = vips_array_double_new(bg, 3);
-    int r = vips_flatten(rotated, &flat, "background", background, "max_alpha",
-                         255.0, NULL);
+    int r = vips_flatten(rotated, &flat, "background", background,
+                         "max_alpha", 255.0, NULL);
     vips_area_unref(VIPS_AREA(background));
     if (r)
       goto fail;
@@ -275,11 +277,13 @@ static Image load_image_vips(const char *path, int max_edge) {
     rotated = flat;
   }
 
+  /* 色彩空间统一到 sRGB */
   if (vips_colourspace(rotated, &srgb, VIPS_INTERPRETATION_sRGB, NULL))
     goto fail;
   g_object_unref(rotated);
   rotated = NULL;
 
+  /* 只在需要时缩小，withEnlargement=false */
   int w = vips_image_get_width(srgb);
   int h = vips_image_get_height(srgb);
   double scale = 1.0;
@@ -287,8 +291,7 @@ static Image load_image_vips(const char *path, int max_edge) {
     scale = (double)max_edge / (w > h ? w : h);
 
   if (scale < 1.0) {
-    if (vips_resize(srgb, &resized, scale, "kernel", VIPS_KERNEL_LANCZOS3,
-                    NULL))
+    if (vips_resize(srgb, &resized, scale, "kernel", VIPS_KERNEL_LANCZOS3, NULL))
       goto fail;
     g_object_unref(srgb);
     srgb = NULL;
@@ -298,11 +301,13 @@ static Image load_image_vips(const char *path, int max_edge) {
     srgb = NULL;
   }
 
+  /* 丢弃多余通道，只保留 RGB */
   if (vips_extract_band(resized, &rgb, 0, "n", 3, NULL))
     goto fail;
   g_object_unref(resized);
   resized = NULL;
 
+  /* 复制到连续内存，防止懒加载指针悬空 */
   if (!(mem = vips_image_copy_memory(rgb)))
     goto fail;
   g_object_unref(rgb);
@@ -323,31 +328,39 @@ static Image load_image_vips(const char *path, int max_edge) {
 
 fail:
   fprintf(stderr, "oilpaint: libvips error: %s\n", vips_error_buffer());
-  if (in)
-    g_object_unref(in);
-  if (rotated)
-    g_object_unref(rotated);
-  if (srgb)
-    g_object_unref(srgb);
-  if (resized)
-    g_object_unref(resized);
-  if (rgb)
-    g_object_unref(rgb);
-  if (mem)
-    g_object_unref(mem);
+  if (in)      g_object_unref(in);
+  if (rotated) g_object_unref(rotated);
+  if (srgb)    g_object_unref(srgb);
+  if (resized) g_object_unref(resized);
+  if (rgb)     g_object_unref(rgb);
+  if (mem)     g_object_unref(mem);
   return img;
 }
 
+/* 用 libvips 保存。返回 0 成功 / -1 失败。
+ *
+ * 注意 vips_copy 的签名是 int vips_copy(VipsImage *in, VipsImage **out, ...)：
+ * 它不返回指针，而是通过第二个参数 &out 输出新图像，返回 int 表示成功与否。 */
 static int save_image_vips(const Image *img, const char *path,
                            const char *format, int quality) {
   size_t sz = (size_t)img->width * img->height * 3;
-  VipsImage *out = vips_image_new_from_memory(
+
+  /* vips_image_new_from_memory 只是包装外部 buffer，不做拷贝 */
+  VipsImage *base = vips_image_new_from_memory(
       img->rgb, sz, img->width, img->height, 3, VIPS_FORMAT_UCHAR);
-  if (!out) {
+  if (!base) {
     fprintf(stderr, "oilpaint: cannot wrap memory into vips image\n");
     return -1;
   }
-  vips_image_set_int(out, "interpretation", VIPS_INTERPRETATION_sRGB);
+
+  /* 显式标记 interpretation 为 sRGB，确保编码器正确识别色彩空间 */
+  VipsImage *out = NULL;
+  if (vips_copy(base, &out, "interpretation", VIPS_INTERPRETATION_sRGB, NULL)) {
+    fprintf(stderr, "oilpaint: vips_copy failed: %s\n", vips_error_buffer());
+    g_object_unref(base);
+    return -1;
+  }
+  g_object_unref(base);
 
   int ret;
   if (strcmp(format, "jpeg") == 0)
@@ -358,22 +371,25 @@ static int save_image_vips(const Image *img, const char *path,
     ret = vips_pngsave(out, path, "compression", 9, NULL);
 
   if (ret)
-    fprintf(stderr, "oilpaint: save failed (%s): %s\n", format,
+    fprintf(stderr, "oilpaint: vips save failed (%s): %s\n", format,
             vips_error_buffer());
 
   g_object_unref(out);
-  return ret;
+  /* vips_*save 返回 0 成功、-1 失败；这里显式归一化 */
+  return ret ? -1 : 0;
 }
 
-#else /* STB */
+#else /* STB 后端 */
 
+/* 使用 stb 加载：自动缩放到 max_edge 以内 */
 static Image load_image_stb(const char *path, int max_edge) {
   Image img = {0, 0, NULL};
   int w, h, ch;
+
+  /* 强制解码成 3 通道，丢弃 alpha */
   stbi_uc *data = stbi_load(path, &w, &h, &ch, 3);
   if (!data) {
-    fprintf(stderr, "oilpaint: cannot open %s: %s\n", path,
-            stbi_failure_reason());
+    fprintf(stderr, "oilpaint: cannot open %s: %s\n", path, stbi_failure_reason());
     return img;
   }
 
@@ -381,10 +397,8 @@ static Image load_image_stb(const char *path, int max_edge) {
     float scale = (float)max_edge / (w > h ? w : h);
     int nw = (int)(w * scale + 0.5f);
     int nh = (int)(h * scale + 0.5f);
-    if (nw < 1)
-      nw = 1;
-    if (nh < 1)
-      nh = 1;
+    if (nw < 1) nw = 1;
+    if (nh < 1) nh = 1;
 
     stbi_uc *resized = malloc((size_t)nw * nh * 3);
     if (!resized) {
@@ -404,22 +418,32 @@ static Image load_image_stb(const char *path, int max_edge) {
   return img;
 }
 
+/* 用 stb 保存。返回 0 成功 / -1 失败。
+ * 注意：stbi_write_* 的语义是“非零成功、零失败”，与 libvips 相反，
+ * 这里统一转换成 0/-1，避免上层判断逻辑分叉。 */
 static int save_image_stb(const Image *img, const char *path,
                           const char *format, int quality) {
-  if (strcmp(format, "jpeg") == 0)
-    return stbi_write_jpg(path, img->width, img->height, 3, img->rgb, quality);
+  int ok;
 
-  if (strcmp(format, "webp") == 0)
-    fprintf(
-        stderr,
-        "oilpaint: WebP not supported in stb backend, writing PNG instead\n");
-
-  return stbi_write_png(path, img->width, img->height, 3, img->rgb,
+  if (strcmp(format, "jpeg") == 0) {
+    ok = stbi_write_jpg(path, img->width, img->height, 3, img->rgb, quality);
+  } else {
+    if (strcmp(format, "webp") == 0)
+      fprintf(stderr,
+              "oilpaint: WebP not supported in stb backend, writing PNG instead\n");
+    ok = stbi_write_png(path, img->width, img->height, 3, img->rgb,
                         img->width * 3);
+  }
+
+  if (!ok)
+    fprintf(stderr, "oilpaint: stb save failed (%s): %s\n", format, path);
+
+  return ok ? 0 : -1;
 }
 
-#endif
+#endif /* HAVE_VIPS */
 
+/* 后端分发的统一入口 */
 static Image load_image(const char *path, int max_edge) {
 #ifdef HAVE_VIPS
   return load_image_vips(path, max_edge);
@@ -428,6 +452,7 @@ static Image load_image(const char *path, int max_edge) {
 #endif
 }
 
+/* 统一返回 0 成功 / -1 失败 */
 static int save_image(const Image *img, const char *path, const char *format,
                       int quality) {
 #ifdef HAVE_VIPS
@@ -441,6 +466,9 @@ static int save_image(const Image *img, const char *path, const char *format,
  * 工具函数
  * ============================================================ */
 
+/* 递归创建目录，等价于 mkdir -p。
+ * 用 libc 的 mkdir 而不是 system("mkdir -p ...")，避免 shell 注入以及
+ * 对路径中单引号的转义问题。 */
 static int mkdir_p(const char *path) {
   char tmp[2048];
   size_t len = strlen(path);
@@ -450,6 +478,7 @@ static int mkdir_p(const char *path) {
   if (tmp[len - 1] == '/')
     tmp[len - 1] = '\0';
 
+  /* 从第 2 个字符开始找 '/'，逐段创建 */
   for (char *p = tmp + 1; *p; p++) {
     if (*p == '/') {
       *p = '\0';
@@ -463,6 +492,35 @@ static int mkdir_p(const char *path) {
   return 0;
 }
 
+/* 把用户输入的格式规范化成内部使用的名字：
+ *   jpg / JPG / jpeg / JPEG → jpeg
+ *   png / PNG               → png
+ *   webp / WEBP             → webp
+ * 其它情况返回 NULL。 */
+static const char *normalize_format(const char *fmt) {
+  if (!fmt)
+    return NULL;
+  if (strcasecmp(fmt, "png") == 0)  return "png";
+  if (strcasecmp(fmt, "jpg") == 0)  return "jpeg";
+  if (strcasecmp(fmt, "jpeg") == 0) return "jpeg";
+  if (strcasecmp(fmt, "webp") == 0) return "webp";
+  return NULL;
+}
+
+/* 从路径扩展名推断格式，无扩展名默认 png */
+static const char *format_from_path(const char *path) {
+  const char *dot = strrchr(path, '.');
+  if (!dot)
+    return "png";
+  const char *norm = normalize_format(dot + 1);
+  return norm ? norm : "png";
+}
+
+/* 输出文件名用的扩展名：jpeg → jpg，其它保持原样 */
+static const char *out_ext(const char *format) {
+  return strcmp(format, "jpeg") == 0 ? "jpg" : format;
+}
+
 /* ============================================================
  * CLI
  * ============================================================ */
@@ -473,8 +531,7 @@ static void usage(const char *prog) {
       "oilpaint - turn photos into oil paintings\n\n"
       "Usage:\n  %s [options] <image...>\n\n"
       "Options:\n"
-      "  -o, --out <path>        Output file or directory (default: "
-      "./oilpaint-output)\n"
+      "  -o, --out <path>        Output file or directory (default: ./oilpaint-output)\n"
       "  -r, --radius <n>        Brush size, 1-24 (default: 4)\n"
       "  -m, --max <px>          Max long edge, 64+ (default: 1600)\n"
       "      --texture <0-1>     Canvas texture strength (default: 0.35)\n"
@@ -496,47 +553,29 @@ int main(int argc, char **argv) {
   float texture = 0.35f, saturation = 1.0f;
   const char *format_opt = NULL;
 
-  static struct option long_opts[] = {{"out", required_argument, 0, 'o'},
-                                      {"radius", required_argument, 0, 'r'},
-                                      {"max", required_argument, 0, 'm'},
-                                      {"texture", required_argument, 0, 1000},
-                                      {"saturation", required_argument, 0, 's'},
-                                      {"format", required_argument, 0, 'f'},
-                                      {"quality", required_argument, 0, 'q'},
-                                      {"help", no_argument, 0, 'h'},
-                                      {0, 0, 0, 0}};
+  static struct option long_opts[] = {
+      {"out",        required_argument, 0, 'o'},
+      {"radius",     required_argument, 0, 'r'},
+      {"max",        required_argument, 0, 'm'},
+      {"texture",    required_argument, 0, 1000},
+      {"saturation", required_argument, 0, 's'},
+      {"format",     required_argument, 0, 'f'},
+      {"quality",    required_argument, 0, 'q'},
+      {"help",       no_argument,       0, 'h'},
+      {0, 0, 0, 0}};
 
   int c;
-  while ((c = getopt_long(argc, argv, "o:r:m:s:f:q:h", long_opts, NULL)) !=
-         -1) {
+  while ((c = getopt_long(argc, argv, "o:r:m:s:f:q:h", long_opts, NULL)) != -1) {
     switch (c) {
-    case 'o':
-      out_path = optarg;
-      break;
-    case 'r':
-      radius = atoi(optarg);
-      break;
-    case 'm':
-      max_edge = atoi(optarg);
-      break;
-    case 1000:
-      texture = atof(optarg);
-      break;
-    case 's':
-      saturation = atof(optarg);
-      break;
-    case 'f':
-      format_opt = optarg;
-      break;
-    case 'q':
-      quality = atoi(optarg);
-      break;
-    case 'h':
-      usage(argv[0]);
-      return 0;
-    default:
-      usage(argv[0]);
-      return 2;
+    case 'o': out_path = optarg; break;
+    case 'r': radius = atoi(optarg); break;
+    case 'm': max_edge = atoi(optarg); break;
+    case 1000: texture = atof(optarg); break;
+    case 's': saturation = atof(optarg); break;
+    case 'f': format_opt = optarg; break;
+    case 'q': quality = atoi(optarg); break;
+    case 'h': usage(argv[0]); return 0;
+    default: usage(argv[0]); return 2;
     }
   }
 
@@ -545,11 +584,23 @@ int main(int argc, char **argv) {
     return 2;
   }
 
+  /* 校验 --format 参数 */
+  if (format_opt && !normalize_format(format_opt)) {
+    fprintf(stderr, "oilpaint: unsupported format \"%s\" (use png, jpeg or webp)\n",
+            format_opt);
+    return 2;
+  }
+
+  /* 判断输出模式：
+   *   - 多输入必然是多文件（视为目录）
+   *   - 单输入且 out_path 有扩展名 → 视为具体文件名
+   *   - 单输入且 out_path 是目录（无扩展名或有斜杠）→ 目录模式 */
   int multi = (argc - optind) > 1;
   char out_dir[1024] = "oilpaint-output";
   if (out_path && !multi) {
     const char *dot = strrchr(out_path, '.');
     if (!(dot && strchr(dot, '/') == NULL)) {
+      /* 没有扩展名或扩展名前面有路径分隔符 → 当作目录 */
       snprintf(out_dir, sizeof(out_dir), "%s", out_path);
       out_path = NULL;
     }
@@ -562,19 +613,14 @@ int main(int argc, char **argv) {
   for (int i = optind; i < argc; i++) {
     const char *input = argv[i];
 
-    char format[16] = "png";
+    /* 决定输出格式：显式参数 > 输出文件扩展名 > 输入扩展名 > png */
+    const char *format;
     if (format_opt) {
-      snprintf(format, sizeof(format), "%s", format_opt);
+      format = normalize_format(format_opt);
+    } else if (out_path && !multi) {
+      format = format_from_path(out_path);
     } else {
-      const char *dot = strrchr(input, '.');
-      if (dot) {
-        if (strcasecmp(dot, ".jpg") == 0 || strcasecmp(dot, ".jpeg") == 0)
-          strcpy(format, "jpeg");
-        else if (strcasecmp(dot, ".webp") == 0)
-          strcpy(format, "webp");
-        else
-          strcpy(format, "png");
-      }
+      format = format_from_path(input);
     }
 
     printf("loading %s ...\n", input);
@@ -592,16 +638,18 @@ int main(int argc, char **argv) {
     free(img.rgb);
     img.rgb = painted;
 
+    /* 拼输出路径 */
     char out_file[2048];
     if (out_path && !multi) {
+      /* 单文件模式：直接用用户指定的文件名，若缺扩展名则补齐 */
       const char *dot = strrchr(out_path, '.');
       if (dot && strchr(dot, '/') == NULL) {
         snprintf(out_file, sizeof(out_file), "%s", out_path);
       } else {
-        const char *ext = strcmp(format, "jpeg") == 0 ? "jpg" : format;
-        snprintf(out_file, sizeof(out_file), "%s.%s", out_path, ext);
+        snprintf(out_file, sizeof(out_file), "%s.%s", out_path, out_ext(format));
       }
     } else {
+      /* 目录模式：取输入文件的 basename 做 stem，加 -oilpaint 后缀 */
       const char *base = strrchr(input, '/');
       base = base ? base + 1 : input;
       char stem[512];
@@ -609,13 +657,13 @@ int main(int argc, char **argv) {
       char *dot = strrchr(stem, '.');
       if (dot)
         *dot = '\0';
-      const char *ext = strcmp(format, "jpeg") == 0 ? "jpg" : format;
       snprintf(out_file, sizeof(out_file), "%s/%s-oilpaint.%s", out_dir, stem,
-               ext);
+               out_ext(format));
     }
 
     printf("  -> %s\n", out_file);
 
+    /* 若路径含目录部分，先递归创建 */
     char *slash = strrchr(out_file, '/');
     if (slash) {
       *slash = '\0';
@@ -624,8 +672,9 @@ int main(int argc, char **argv) {
       *slash = '/';
     }
 
+    /* 两个后端的 save_image 都返回 0 成功 / -1 失败 */
     int save_code = save_image(&img, out_file, format, quality);
-    if (save_code != 1) { // NOTICE: I don't know why 1
+    if (save_code != 0) {
       fprintf(stderr, "oilpaint: failed to save %s, save return code: %d\n",
               out_file, save_code);
       failures++;
